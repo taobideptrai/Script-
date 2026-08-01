@@ -1,0 +1,376 @@
+-- Made by dilih (Updated with New RenderWindow UI)
+-- Open source so u can improve it
+
+local Players = game:GetService("Players")
+local StarterGui = game:GetService("StarterGui")
+local ContextActionService = game:GetService("ContextActionService")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+
+----------------------------------------------------
+-- 1. CORE FUNCTIONALITY (KEEP DEFAULT BACKPACK DISABLED)
+----------------------------------------------------
+local function hasTool()
+	local backpack = player:FindFirstChildOfClass("Backpack")
+	if backpack then
+		for _, v in ipairs(backpack:GetChildren()) do
+			if v:IsA("Tool") then
+				return true
+			end
+		end
+	end
+
+	local character = player.Character
+	if character then
+		for _, v in ipairs(character:GetChildren()) do
+			if v:IsA("Tool") then
+				return true
+			end
+		end
+	end
+
+	return false
+end
+
+local function disableBackpack()
+	pcall(function()
+		StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
+	end)
+end
+
+task.spawn(function()
+	while true do
+		if hasTool() then
+			disableBackpack()
+		end
+		task.wait(0.1)
+	end
+end)
+
+player.CharacterAdded:Connect(function(character)
+	disableBackpack()
+	character.ChildAdded:Connect(function(child)
+		if child:IsA("Tool") then
+			disableBackpack()
+		end
+	end)
+end)
+
+task.spawn(function()
+	local backpack = player:WaitForChild("Backpack")
+	backpack.ChildAdded:Connect(function(child)
+		if child:IsA("Tool") then
+			disableBackpack()
+		end
+	end)
+end)
+
+----------------------------------------------------
+-- 2. NEW UI LIBRARY INITIALIZATION
+----------------------------------------------------
+local Ui = {}
+do
+    local Page = {}
+
+    Ui.__index = Ui
+    Page.__index = Page
+
+    -- Ui class
+    do
+        function Ui.new(title: string, minSize: Vector2?, maxSize: Vector2?)
+            local renderWindow = RenderWindow.new(title)
+
+            if minSize then
+                renderWindow.MinSize = minSize
+            end
+
+            if maxSize then
+                renderWindow.MaxSize = maxSize
+            end
+
+            renderWindow.VisibilityOverride = true
+            
+            local tabMenu = renderWindow:TabMenu()
+
+            return setmetatable({
+                renderWindow = renderWindow,
+                tabMenu = tabMenu
+            }, Ui)
+        end
+
+        function Ui:addPage(name: string)
+            local tabMenu = self.tabMenu
+            local page = tabMenu:Add(name)
+
+            return Page.new(page)
+        end
+    end
+
+    -- Page class
+    do
+        function Page.new(page: RenderDummyWindow)
+            return setmetatable({page = page}, Page)
+        end
+
+        function Page:addDivider(name: string)
+            local page = self.page
+
+            page:Label(name)
+            page:Separator()
+        end
+
+        function Page:addButton(name: string, callback: () -> ()): RenderButton
+            local button = self.page:Button()
+
+            button.Label = name
+            button.OnUpdated:Connect(callback)
+
+            return button
+        end
+
+        function Page:addToggle(name: string, callback: (enabled: boolean) -> ()): RenderCheckbox
+            local checkbox = self.page:CheckBox()
+
+            checkbox.Label = name
+            checkbox.OnUpdated:Connect(callback)
+
+            return checkbox
+        end
+
+        function Page:addSlider(name: string, min: number, max: number, callback: (value: number) -> ()): RenderIntSlider
+            local intSlider = self.page:IntSlider()
+
+            intSlider.Label = name
+            intSlider.Min = min
+            intSlider.Max = max
+
+            intSlider.OnUpdated:Connect(callback)
+
+            return intSlider
+        end
+
+        function Page:addDropdown(name: string, items: {string}, callback: (newSelection: any) -> ()?): (RenderCombo, RenderButton?)
+            local sameLine = self.page:SameLine()
+            local combo = sameLine:Combo()
+            local button = nil
+
+            combo.Items = items
+
+            if callback then
+                button = sameLine:Button()
+
+                button.Label = name
+                button.OnUpdated:Connect(function()
+                    callback(combo.Items[combo.SelectedItem])
+                end)
+            else
+                combo.Label = name
+            end
+
+            return combo, button
+        end
+
+        function Page:addTextBox(name: string, callback: (value: string) -> ()?): (RenderTextbox, RenderButton?)
+            local sameLine = self.page:SameLine()
+            local textBox = sameLine:TextBox()
+            local button = nil
+
+            if callback then
+                button = sameLine:Button()
+
+                button.Label = name
+                button.OnUpdated:Connect(function()
+                    callback(textBox.Value)
+                end)
+            else
+                textBox.Label = name
+            end
+
+            return textBox, button
+        end
+
+        function Page:addCollapsable(name: string, open: boolean?)
+            local collapsable = self.page:Collapsable(name, open)
+
+            return setmetatable({page = collapsable}, Page)
+        end
+
+        function Page:addSameLine()
+            local sameLine = self.page:SameLine()
+
+            return setmetatable({page = sameLine}, Page)
+        end
+    end
+end
+
+----------------------------------------------------
+-- 3. INVENTORY & TOOL MANAGEMENT SYSTEM
+----------------------------------------------------
+local InventoryManager = {
+    Slots = 6,
+    IsLocked = false,
+    SearchQuery = ""
+}
+
+local function getEquippedTool()
+    local char = player.Character
+    return char and char:FindFirstChildOfClass("Tool")
+end
+
+local function getToolsInBackpack()
+    local tools = {}
+    local backpack = player:FindFirstChildOfClass("Backpack")
+    if backpack then
+        for _, item in ipairs(backpack:GetChildren()) do
+            if item:IsA("Tool") then
+                table.insert(tools, item)
+            end
+        end
+    end
+    return tools
+end
+
+local function getAllTools()
+    local tools = getToolsInBackpack()
+    local equipped = getEquippedTool()
+    if equipped then
+        table.insert(tools, 1, equipped)
+    end
+    return tools
+end
+
+local function equipToolByName(toolName: string)
+    if InventoryManager.IsLocked then return end
+    
+    local char = player.Character
+    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
+
+    local currentTool = getEquippedTool()
+    if currentTool and currentTool.Name == toolName then
+        humanoid:UnequipTools()
+        return
+    end
+
+    local backpack = player:FindFirstChildOfClass("Backpack")
+    if backpack then
+        local targetTool = backpack:FindFirstChild(toolName)
+        if targetTool then
+            humanoid:EquipTool(targetTool)
+        end
+    end
+end
+
+----------------------------------------------------
+-- 4. INTEGRATE WITH RENDERWINDOW UI
+----------------------------------------------------
+local mainWindow = Ui.new("Custom Inventory Manager", Vector2.new(350, 450), Vector2.new(600, 700))
+
+-- Page 1: Main Inventory Controls
+local invPage = mainWindow:addPage("Inventory")
+
+invPage:addDivider("Status & Control")
+
+local lockToggle = invPage:addToggle("Lock Inventory Actions", function(state)
+    InventoryManager.IsLocked = state
+    if state then
+        local char = player.Character
+        local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+        if humanoid then humanoid:UnequipTools() end
+    end
+end)
+
+invPage:addButton("Unequip All Tools", function()
+    local char = player.Character
+    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+    if humanoid then humanoid:UnequipTools() end
+end)
+
+invPage:addDivider("Inventory Search & Equip")
+
+local searchBox, _ = invPage:addTextBox("Search Filter", function(val)
+    InventoryManager.SearchQuery = val:lower()
+end)
+
+local toolDropdown, _ = invPage:addDropdown("Equip Tool", {"None"}, function(selectedTool)
+    if selectedTool and selectedTool ~= "None" and selectedTool ~= "" then
+        equipToolByName(selectedTool)
+    end
+end)
+
+local function refreshToolList()
+    local tools = getAllTools()
+    local toolNames = {}
+    
+    for _, tool in ipairs(tools) do
+        if InventoryManager.SearchQuery == "" or string.find(tool.Name:lower(), InventoryManager.SearchQuery) then
+            table.insert(toolNames, tool.Name)
+        end
+    end
+    
+    if #toolNames == 0 then
+        toolNames = {"None"}
+    end
+    
+    toolDropdown.Items = toolNames
+end
+
+invPage:addButton("Refresh Inventory List", function()
+    refreshToolList()
+end)
+
+-- Page 2: Quick Hotbar Shortcuts
+local hotbarPage = mainWindow:addPage("Hotbar Shortcuts")
+
+hotbarPage:addDivider("Quick Equip Slots")
+
+for i = 1, 9 do
+    hotbarPage:addButton("Slot " .. i .. " [Equip Tool #" .. i .. "]", function()
+        local tools = getAllTools()
+        if tools[i] then
+            equipToolByName(tools[i].Name)
+        end
+    end)
+end
+
+-- Keybind handling (1-9 hotbar selection)
+local EnumKeys = {
+    Enum.KeyCode.One, Enum.KeyCode.Two, Enum.KeyCode.Three,
+    Enum.KeyCode.Four, Enum.KeyCode.Five, Enum.KeyCode.Six,
+    Enum.KeyCode.Seven, Enum.KeyCode.Eight, Enum.KeyCode.Nine
+}
+
+for idx, key in ipairs(EnumKeys) do
+    ContextActionService:BindAction("EquipSlot_" .. idx, function(_, state)
+        if state == Enum.UserInputState.Begin then
+            local tools = getAllTools()
+            if tools[idx] then
+                equipToolByName(tools[idx].Name)
+            end
+        end
+    end, false, key)
+end
+
+-- Auto Refresh list when Backpack updates
+local function bindBackpackEvents()
+    local backpack = player:WaitForChild("Backpack")
+    backpack.ChildAdded:Connect(function()
+        task.wait(0.1)
+        refreshToolList()
+    end)
+    backpack.ChildRemoved:Connect(function()
+        task.wait(0.1)
+        refreshToolList()
+    end)
+end
+
+task.spawn(bindBackpackEvents)
+player.CharacterAdded:Connect(function()
+    task.wait(0.5)
+    bindBackpackEvents()
+    refreshToolList()
+end)
+
+-- Initial Refresh
+refreshToolList()
